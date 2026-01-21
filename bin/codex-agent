@@ -1,3 +1,10 @@
 #!/bin/bash
 # Codex Agent - Delegate tasks to GPT Codex agents
-exec bun /Users/saint/Dev/Tools/codex-agent/src/cli.ts "$@"
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+exec bun "$SCRIPT_DIR/../src/cli.ts" "$@"
