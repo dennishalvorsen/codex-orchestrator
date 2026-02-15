@@ -55,12 +55,25 @@ plugins/codex-orchestrator/         # the plugin
 
 The following commands may be run without asking for user confirmation:
 
+- `codex-agent start <prompt> [options]` - Start a new Codex agent
 - `codex-agent kill <jobId>` - Kill a running agent
 - `codex-agent clean` - Clean old completed jobs
 - `codex-agent jobs` / `codex-agent jobs --json` - List jobs
 - `codex-agent capture <jobId>` - Capture agent output
 - `codex-agent status <jobId>` - Check job status
 - `codex-agent health` - Health check
+- `codex-agent send <jobId> <message>` - Send message to running agent
+- `codex-agent report <jobId>` - Full agent report
+- `codex-agent output <jobId>` - Get full session output
+- `codex-agent log` - Show agents.log
+- `codex-agent context` - Generate context recovery summary
+- `codex-agent dashboard` - Live status dashboard
+- `codex-agent claims` - Show active file claims
+- `codex-agent watch <jobId>` - Stream output updates
+- `codex-agent sessions` - List active tmux sessions
+- `codex-agent delete <jobId>` - Delete a job
+- `codex-agent attach <jobId>` - Get tmux attach command
+- `sleep <seconds>` - Wait between agent checks
 - `bun run typecheck` - Run TypeScript type checking
 - `bun test` - Run test suite
 

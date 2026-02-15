@@ -204,8 +204,17 @@ function parseJsonSession(content: string): ParsedSessionData | null {
 }
 
 export function stripAnsiCodes(text: string): string {
-  // Remove ANSI escape sequences
-  return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\[[\d;]*m/g, '');
+  return text
+    // Remove ANSI escape sequences (colors, cursor movements, etc)
+    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
+    // Remove OSC sequences
+    .replace(/\x1b\][^\x07]*\x07/g, "")
+    // Handle split/truncated escape remnants in captured output
+    .replace(/\[[\d;]*m/g, "")
+    // Remove carriage returns from spinner-style updates
+    .replace(/\r/g, "")
+    // Remove other control characters except newline and tab
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
 }
 
 export function extractSessionId(logContent: string): string | null {
@@ -302,14 +311,19 @@ function extractDiffStats(patchText: string): DiffStats {
  * Known error patterns to detect in log output
  */
 const ERROR_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /^Error:/m, label: "Error line detected" },
+  { pattern: /\bfatal error\b/i, label: "Fatal error" },
+  { pattern: /\bpanic\b/i, label: "Panic" },
+  { pattern: /process exited with code [1-9]\d*/i, label: "Non-zero process exit" },
+  { pattern: /\bapi\b.{0,40}\b(error|failed|failure)\b/i, label: "API error" },
   { pattern: /rate.?limit/i, label: "Rate limit hit" },
   { pattern: /429\s*(Too Many Requests)?/i, label: "Rate limit (429)" },
-  { pattern: /auth.*expired|token.*expired|unauthorized/i, label: "Auth expired" },
+  { pattern: /auth.*expired|token.*expired|unauthorized|authentication failed|invalid api key/i, label: "Auth failure" },
   { pattern: /context.*overflow|context.*length.*exceeded/i, label: "Context overflow" },
   { pattern: /ENOMEM|out of memory/i, label: "Out of memory" },
   { pattern: /ENOSPC|no space left/i, label: "Disk full" },
   { pattern: /connection.*refused|ECONNREFUSED/i, label: "Connection refused" },
-  { pattern: /timeout|ETIMEDOUT/i, label: "Timeout" },
+  { pattern: /\bETIMEDOUT\b|operation timed out|request timed out/i, label: "Timeout" },
 ];
 
 const WARNING_PATTERNS: Array<{ pattern: RegExp; label: string }> = [

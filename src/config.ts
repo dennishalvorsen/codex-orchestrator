@@ -1,5 +1,10 @@
 // Configuration for codex-agent
 
+const homeDir = process.env.HOME?.trim();
+if (!homeDir) {
+  throw new Error("HOME environment variable is not set");
+}
+
 export const config = {
   // Default model
   model: "gpt-5.3-codex",
@@ -13,7 +18,7 @@ export const config = {
   defaultSandbox: "workspace-write" as const,
 
   // Job storage directory
-  jobsDir: `${process.env.HOME}/.codex-agent/jobs`,
+  jobsDir: `${homeDir}/.codex-agent/jobs`,
 
   // Default inactivity timeout in minutes for running jobs
   defaultTimeout: 60,
@@ -27,6 +32,14 @@ export const config = {
   // Polling settings for tmux pane readiness checks
   tmuxPollIntervalMs: 100,
   tmuxPollTimeoutMs: 10000,
+};
+
+export const statusRank: Record<string, number> = {
+  running: 0,
+  pending: 1,
+  failed: 2,
+  cancelled: 3,
+  completed: 4,
 };
 
 export type ReasoningEffort = typeof config.reasoningEfforts[number];

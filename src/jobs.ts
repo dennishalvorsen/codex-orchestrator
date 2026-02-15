@@ -214,6 +214,7 @@ export function getJobsJson(): JobsJsonOutput {
 }
 
 export function deleteJob(jobId: string): boolean {
+  assertValidJobId(jobId);
   const job = loadJob(jobId);
 
   // Kill tmux session if running
@@ -267,18 +268,6 @@ export function startJob(options: StartJobOptions): Job {
 
   saveJob(job);
 
-  // Register file claims and warn about overlaps
-  if (options.claims && options.claims.length > 0) {
-    for (const pattern of options.claims) {
-      const overlaps = checkOverlaps(jobId, pattern);
-      if (overlaps.length > 0) {
-        const overlapInfo = overlaps.map((o) => `${o.jobId}:${o.pattern}`).join(", ");
-        console.error(`Warning: Claim "${pattern}" overlaps with: ${overlapInfo}`);
-      }
-      addClaim(jobId, pattern);
-    }
-  }
-
   // Create tmux session with codex
   const result = createSession({
     jobId,
@@ -293,7 +282,20 @@ export function startJob(options: StartJobOptions): Job {
     job.status = "running";
     job.startedAt = new Date().toISOString();
     job.tmuxSession = result.sessionName;
+
+    // Register file claims and warn about overlaps
+    if (options.claims && options.claims.length > 0) {
+      for (const pattern of options.claims) {
+        const overlaps = checkOverlaps(jobId, pattern);
+        if (overlaps.length > 0) {
+          const overlapInfo = overlaps.map((o) => `${o.jobId}:${o.pattern}`).join(", ");
+          console.error(`Warning: Claim "${pattern}" overlaps with: ${overlapInfo}`);
+        }
+        addClaim(jobId, pattern);
+      }
+    }
   } else {
+    try { removeClaims(jobId); } catch { /* non-critical */ }
     job.status = "failed";
     job.error = result.error || "Failed to create tmux session";
     job.completedAt = new Date().toISOString();
@@ -317,6 +319,7 @@ export function killJob(jobId: string): boolean {
   }
 
   job.status = "cancelled";
+  try { removeClaims(jobId); } catch { /* non-critical */ }
   job.error = "Cancelled by user";
   job.completedAt = new Date().toISOString();
   saveJob(job);
@@ -422,6 +425,7 @@ export function refreshJobStatus(jobId: string): Job | null {
         // No log file
       }
       saveJob(job);
+      try { removeClaims(job.id); } catch { /* non-critical */ }
       try { logJobComplete(job); } catch { /* non-critical */ }
     } else {
       // Session exists - check if codex is still running
@@ -436,6 +440,7 @@ export function refreshJobStatus(jobId: string): Job | null {
           job.result = fullOutput;
         }
         saveJob(job);
+        try { removeClaims(job.id); } catch { /* non-critical */ }
         try { logJobComplete(job); } catch { /* non-critical */ }
       } else {
         // Check for known error patterns in recent output
@@ -443,10 +448,12 @@ export function refreshJobStatus(jobId: string): Job | null {
         if (recentOutput) {
           const issues = detectIssues(recentOutput);
           if (issues.errors.length > 0) {
+            killSession(job.tmuxSession);
             job.status = "failed";
             job.error = `Detected: ${issues.errors.join(", ")}`;
             job.completedAt = new Date().toISOString();
             saveJob(job);
+            try { removeClaims(job.id); } catch { /* non-critical */ }
             try { logJobComplete(job); } catch { /* non-critical */ }
           } else if (isInactiveTimedOut(job)) {
             killSession(job.tmuxSession);
@@ -454,6 +461,7 @@ export function refreshJobStatus(jobId: string): Job | null {
             job.error = `Timed out after ${config.defaultTimeout} minutes of inactivity`;
             job.completedAt = new Date().toISOString();
             saveJob(job);
+            try { removeClaims(job.id); } catch { /* non-critical */ }
             try { logJobComplete(job); } catch { /* non-critical */ }
           }
         } else if (isInactiveTimedOut(job)) {
@@ -462,6 +470,7 @@ export function refreshJobStatus(jobId: string): Job | null {
           job.error = `Timed out after ${config.defaultTimeout} minutes of inactivity`;
           job.completedAt = new Date().toISOString();
           saveJob(job);
+          try { removeClaims(job.id); } catch { /* non-critical */ }
           try { logJobComplete(job); } catch { /* non-critical */ }
         }
       }

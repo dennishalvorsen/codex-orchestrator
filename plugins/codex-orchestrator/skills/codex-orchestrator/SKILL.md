@@ -56,17 +56,19 @@ Codex reports to you. You report to the user.
 
 #### Rule 1: Hard Delegation Boundary
 
-If a task involves reading source files, analyzing code, modifying files, researching the codebase, testing, security auditing, or any code-related conclusion - you MUST delegate to codex-agent. No exceptions.
+If a task involves reading source files, analyzing code, modifying files, researching the codebase, testing, security auditing, or any code-related conclusion, you MUST delegate the execution/analysis to codex-agent.
 
-You must NOT:
-- Read repository source files directly (zero direct source-file reads)
-- Analyze code yourself based on file contents
-- Make technical claims without citing codex-agent job IDs and capture output
-
-You MAY only read directly:
+You MAY read directly:
 - agents.log (for coordination state)
 - PRD documents you wrote yourself
 - User-pasted code snippets in the conversation
+- Up to one repository file for conversational context
+
+All multi-file analysis MUST go through Codex agents.
+
+You must NOT:
+- Perform multi-file source analysis yourself
+- Make technical claims without citing codex-agent job IDs and capture output
 
 If codex-agent is unavailable after health check, STOP and report blocked. Do not fall back to self-implementation unless the user explicitly says 'do it yourself'.
 
@@ -124,18 +126,30 @@ codex --login
 
 Not every task needs the full 7-step pipeline. Choose based on complexity:
 
-| Complexity | Pipeline | When to use |
-|-----------|----------|-------------|
-| **Simple** | Fast Track (3 steps) | Bug fixes, small changes, single-file edits, config updates |
-| **Medium** | Standard (5 steps) | New features, multi-file changes, refactors |
-| **Complex** | Full Pipeline (7 steps) | Architecture changes, new systems, large features |
+| Complexity | Pipeline | Flow | When to use |
+|-----------|----------|------|-------------|
+| **Simple** | **Simple (1 agent)** | Single Codex implementation agent with verification | Bug fixes, single-file changes |
+| **Medium** | **Standard (3 steps)** | Research -> Implement -> Review | Multi-file changes, scoped features, refactors |
+| **Complex** | **Full (7 steps)** | Ideation -> Research -> Synthesis -> PRD -> Implement -> Review -> Test | Architecture changes, new systems, large features |
 
 **Auto-detect complexity:**
-- Single file mentioned + clear fix = **Fast Track**
-- Multiple files or "add feature" = **Standard**
-- "refactor", "redesign", "new system", PRD needed = **Full Pipeline**
+- Single file mentioned + clear fix = **Simple**
+- Multiple files or "add feature" with clear scope = **Standard**
+- "refactor", "redesign", "new system", PRD needed = **Full**
 
-### Fast Track Pipeline (Simple Tasks)
+### Simple Pipeline (1 Agent)
+
+```
+USER'S REQUEST
+     |
+     v
+1. IMPLEMENT + VERIFY   (Codex, workspace-write)
+```
+
+Use for: bug fixes and clear single-file changes.
+Instruct the single agent to implement, run typecheck/tests, and self-review before reporting.
+
+### Standard Pipeline (3 Steps)
 
 ```
 USER'S REQUEST
@@ -148,8 +162,7 @@ USER'S REQUEST
 3. REVIEW           (Codex, read-only)
 ```
 
-Use for: bug fixes, small features, config changes, dependency updates.
-Skip: ideation, synthesis, PRD, separate testing (review agent verifies).
+Use for: multi-file feature work, refactors with clear scope, and most day-to-day delivery tasks.
 
 ### The Full Factory Pipeline
 
@@ -179,30 +192,21 @@ USER'S REQUEST
 
 Detect where you are based on context:
 
-| Signal | Stage | Action |
-|--------|-------|--------|
-| New feature request, vague problem | IDEATION | Discuss with user, clarify scope |
-| "investigate", "research", "understand" | RESEARCH | Spawn read-only Codex agents |
-| Agent findings ready, need synthesis | SYNTHESIS | You review, filter, combine |
-| "let's plan", "create PRD", synthesis done | PRD | You write PRD to docs/prds/ |
-| PRD exists, "implement", "build" | IMPLEMENTATION | Spawn workspace-write Codex agents |
-| Implementation done, "review" | REVIEW | Spawn review Codex agents |
-| "test", "verify", review passed | TESTING | Spawn test-writing Codex agents |
-
-## Pipeline Modes
-
-### Choosing the Right Pipeline
-
-| Complexity | Pipeline | When to use |
-|------------|----------|-------------|
-| Simple | Fast Lane (1 agent) | Bug fixes, small changes, single-file edits |
-| Medium | Standard (3-5 steps) | New features, multi-file changes |
-| Complex | Full Pipeline (7 steps) | Architecture changes, new systems |
+| Signal | Pipeline/Stage | Action |
+|--------|----------------|--------|
+| Single-file bug fix, explicit change request | SIMPLE | Spawn one workspace-write agent with implementation + verification requirements |
+| New feature request, vague problem | FULL / IDEATION | Discuss with user, clarify scope |
+| "investigate", "research", "understand" | STANDARD or FULL / RESEARCH | Spawn read-only Codex agents |
+| Agent findings ready, need synthesis | FULL / SYNTHESIS | You review, filter, combine |
+| "let's plan", "create PRD", synthesis done | FULL / PRD | You write PRD to docs/prds/ |
+| PRD exists, "implement", "build" | STANDARD or FULL / IMPLEMENTATION | Spawn workspace-write Codex agents |
+| Implementation done, "review" | STANDARD or FULL / REVIEW | Spawn review Codex agents |
+| "test", "verify", review passed | FULL / TESTING | Spawn test-writing Codex agents |
 
 ## Core Principles
 
 1. **Gold Standard Quality** - No shortcuts. Security, proper patterns, thorough testing - all of it.
-2. **Always Interactive** - Agents stay open for course correction. Never kill and respawn - send a message to redirect.
+2. **Always Interactive** - Prefer sending messages to redirect agents. Only kill as last resort after a confirmed stuck state (no output changes for 10+ minutes despite send attempts).
 3. **Parallel Execution** - Multiple Claude instances can spawn multiple Codex agents simultaneously.
 4. **Codebase Map Always** - Every agent gets `--map` for context.
 5. **PRDs Drive Implementation** - Complex changes get PRDs in docs/prds/.
@@ -541,7 +545,7 @@ Spawn implementation agents with PRD context:
 codex-agent start "Implement Phase 1 of docs/prds/auth-refactor.md. Read the PRD first." --map -f "docs/prds/auth-refactor.md"
 ```
 
-For large PRDs, implement in phases with separate agents.
+For large PRDs, implement in phases with separate agents. If multiple write agents are active, each must use a separate `--dir`.
 
 ### Stage 6: Review (Codex Agents - read-only)
 
@@ -583,10 +587,10 @@ Report any concerns." --map -s read-only
 
 ```bash
 # Write tests
-codex-agent start "Write comprehensive tests for the auth module changes" --map
+codex-agent start "Write comprehensive tests for the auth module changes" --map --dir ./branch-tests
 
 # Run verification
-codex-agent start "Run typecheck and tests. Fix any failures." --map
+codex-agent start "Run typecheck and tests. Fix any failures." --map --dir ./branch-verify
 ```
 
 ## Scaling: Multiple Claude Instances
@@ -677,12 +681,12 @@ codex-agent jobs --json
 
 ```bash
 # Phase 1
-codex-agent start "Implement Phase 1 of PRD" --map
+codex-agent start "Implement Phase 1 of PRD" --map --dir ./branch-phase1
 # Wait for completion, review
 codex-agent jobs --json
 
 # Phase 2 (after Phase 1 verified)
-codex-agent start "Implement Phase 2 of PRD" --map
+codex-agent start "Implement Phase 2 of PRD" --map --dir ./branch-phase2
 ```
 
 ## Quality Gates
@@ -706,7 +710,10 @@ Before marking any stage complete, verify against the Definition of Done checkli
 codex-agent jobs --json           # check status
 codex-agent capture <jobId> 100   # see what's happening
 codex-agent send <jobId> "Status update - what's blocking you?"
-codex-agent kill <jobId>          # only if truly stuck
+# wait, then re-check for output change
+codex-agent capture <jobId> 100
+codex-agent send <jobId> "Give blockers and next concrete step."
+codex-agent kill <jobId>          # last resort: no output change for 10+ minutes despite send attempts
 ```
 
 ### Agent Didn't Get Message
@@ -744,7 +751,7 @@ codex-agent report <jobId>
 
 The `context` command generates a complete summary of all running, completed, and failed agents plus recent agents.log entries. This gives you everything needed to resume from where you left off.
 
-Do not inspect source files directly during recovery. Use codex-agent capture/output only.
+During recovery, you may read up to one file directly for conversational context. Keep all multi-file investigation in codex-agent capture/output flows.
 
 ## When NOT to Use This Pipeline
 
@@ -753,7 +760,7 @@ Basically never. Codex agents are the default for all execution work.
 **The ONLY exceptions:**
 - The user explicitly says "you do it" or "don't use Codex"
 - Pure conversation/discussion (no code, no files)
-- You need to read a single file to understand context for the conversation
+- You need to read up to one file to understand conversational context
 
 **Everything else goes to Codex agents**, including:
 - "Simple" single file changes

@@ -13,6 +13,7 @@ export interface TmuxSession {
 }
 
 const ALLOWED_CONTROL_KEYS = new Set(["C-c", "C-z", "Enter", "Escape"]);
+const JOB_ID_RE = /^[0-9a-f]{1,16}$/;
 
 function shQuote(v: string): string {
   return "'" + v.replace(/'/g, "'\\\"'\\\"'") + "'";
@@ -74,6 +75,7 @@ function waitForPaneContent(
   timeoutMs: number = config.tmuxPollTimeoutMs
 ): boolean {
   const deadline = Date.now() + timeoutMs;
+  let delay = 50;
   while (Date.now() < deadline) {
     try {
       const result = spawnSync("tmux", ["capture-pane", "-t", sessionName, "-p"], {
@@ -83,7 +85,8 @@ function waitForPaneContent(
         return true;
       }
     } catch {}
-    spawnSync("sleep", [String(config.tmuxPollIntervalMs / 1000)]);
+    spawnSync("sleep", [String(delay / 1000)]);
+    delay = Math.min(delay * 2, 500);
   }
   return false;
 }
@@ -107,13 +110,6 @@ export function incrementalDiff(prev: string, curr: string): string {
 }
 
 /**
- * Validate a job ID (must be hex string, 8 chars)
- */
-export function validateJobId(jobId: string): boolean {
-  return /^[0-9a-f]{1,16}$/.test(jobId);
-}
-
-/**
  * Send text to a tmux session safely using load-buffer + paste-buffer.
  * This avoids all shell escaping issues with send-keys.
  */
@@ -132,7 +128,7 @@ function safeSendText(sessionName: string, text: string): void {
  * Get tmux session name for a job
  */
 export function getSessionName(jobId: string): string {
-  if (!validateJobId(jobId)) {
+  if (!JOB_ID_RE.test(jobId)) {
     throw new Error(`Invalid job ID: ${jobId}`);
   }
   return `${config.tmuxPrefix}-${jobId}`;
@@ -175,7 +171,7 @@ export function createSession(options: {
 
   try {
     // Validate jobId to prevent injection
-    if (!validateJobId(options.jobId)) {
+    if (!JOB_ID_RE.test(options.jobId)) {
       return { sessionName, success: false, error: "Invalid job ID format" };
     }
     assertSafeModel(options.model);
@@ -222,6 +218,7 @@ export function createSession(options: {
 
     return { sessionName, success: true };
   } catch (err) {
+    try { killSession(sessionName); } catch { /* may not exist */ }
     // Clean up prompt file on failure too
     try { unlinkSync(promptFile); } catch { /* ignore */ }
     return {
@@ -383,13 +380,6 @@ export function listSessions(): TmuxSession[] {
 }
 
 /**
- * Get the command to attach to a session (for display to user)
- */
-export function getAttachCommand(sessionName: string): string {
-  return `tmux attach -t "${sessionName}"`;
-}
-
-/**
  * Check if the session's codex process is still running
  */
 export function isSessionActive(sessionName: string): boolean {
@@ -450,44 +440,4 @@ export function heartbeat(sessionName: string): { alive: boolean; pid: number | 
   } catch {
     return { alive: false, pid: null };
   }
-}
-
-/**
- * Watch a session's output (returns a stream of updates)
- * This is for programmatic watching - for interactive use, just attach
- */
-export function watchSession(
-  sessionName: string,
-  callback: (content: string) => void,
-  intervalMs: number = 1000
-): { stop: () => void } {
-  let lastContent = "";
-  let running = true;
-
-  const interval = setInterval(() => {
-    if (!running) return;
-
-    const content = capturePane(sessionName, { lines: 100 });
-    if (content && content !== lastContent) {
-      // Only send the new lines
-      const newContent = incrementalDiff(lastContent, content);
-      if (newContent) {
-        callback(newContent);
-      }
-      lastContent = content;
-    }
-
-    // Check if session still exists
-    if (!sessionExists(sessionName)) {
-      running = false;
-      clearInterval(interval);
-    }
-  }, intervalMs);
-
-  return {
-    stop: () => {
-      running = false;
-      clearInterval(interval);
-    },
-  };
 }

@@ -29,9 +29,9 @@ export function readAgentLog(cwd: string): string | null {
 export function appendToAgentLog(cwd: string, entry: string): void {
   const logPath = getLogPath(cwd);
   if (!existsSync(logPath)) {
-    writeFileSync(logPath, "# Agents Log\n\n");
+    writeFileSync(logPath, "# Agents Log\n\n", { mode: 0o600 });
   }
-  appendFileSync(logPath, entry + "\n");
+  appendFileSync(logPath, entry + "\n", { mode: 0o600 });
 }
 
 /**

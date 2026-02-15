@@ -1,6 +1,6 @@
 // File ownership claims to prevent multi-agent edit conflicts
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync, renameSync } from "fs";
 import { join } from "path";
 import { config } from "./config.ts";
 
@@ -33,7 +33,9 @@ function loadClaims(): ClaimsData {
 
 function saveClaims(data: ClaimsData): void {
   ensureClaimsDir();
-  writeFileSync(CLAIMS_FILE, JSON.stringify(data, null, 2));
+  const tmpPath = CLAIMS_FILE + "." + process.pid + ".tmp";
+  writeFileSync(tmpPath, JSON.stringify(data, null, 2), { mode: 0o600 });
+  renameSync(tmpPath, CLAIMS_FILE);
 }
 
 /**

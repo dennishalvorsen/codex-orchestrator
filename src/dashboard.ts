@@ -2,6 +2,7 @@
 
 import { listJobs, refreshJobStatus, getJobOutput, type Job } from "./jobs.ts";
 import { listClaims } from "./claims.ts";
+import { statusRank } from "./config.ts";
 
 function clearScreen(): void {
   process.stdout.write("\x1b[2J\x1b[H");
@@ -126,32 +127,27 @@ export function runDashboard(intervalMs: number = 2000): void {
     if (!running) return;
 
     // Refresh status for running jobs
-    const allJobs = listJobs();
-    for (const job of allJobs) {
+    const jobs = listJobs();
+    for (const job of jobs) {
       if (job.status === "running") {
         refreshJobStatus(job.id);
       }
     }
 
-    // Re-load after refresh
-    const jobs = listJobs();
+    // Re-read after refresh to pick up updated statuses
+    const refreshedJobs = listJobs();
 
     // Sort: running first, then by creation time
-    const statusRank: Record<Job["status"], number> = {
-      running: 0,
-      pending: 1,
-      failed: 2,
-      cancelled: 3,
-      completed: 4,
-    };
-    jobs.sort((a, b) => {
-      const rankDiff = statusRank[a.status] - statusRank[b.status];
+    refreshedJobs.sort((a, b) => {
+      const rankDiff =
+        (statusRank[a.status] ?? Number.MAX_SAFE_INTEGER) -
+        (statusRank[b.status] ?? Number.MAX_SAFE_INTEGER);
       if (rankDiff !== 0) return rankDiff;
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
 
     // Limit to 20 most recent
-    const display = jobs.slice(0, 20);
+    const display = refreshedJobs.slice(0, 20);
 
     clearScreen();
     console.log(renderDashboard(display));

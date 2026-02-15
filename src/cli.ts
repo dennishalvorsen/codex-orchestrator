@@ -3,7 +3,7 @@
 // Codex Agent CLI - Delegate tasks to GPT Codex agents with tmux integration
 // Designed for Claude Code orchestration with bidirectional communication
 
-import { config, ReasoningEffort, SandboxMode } from "./config.js";
+import { config, statusRank, ReasoningEffort, SandboxMode } from "./config.ts";
 import { resolve } from "path";
 import { fileURLToPath } from "url";
 import {
@@ -26,7 +26,12 @@ import {
 import { loadFiles, formatPromptWithFiles, estimateTokens, loadCodebaseMap } from "./files.ts";
 import { incrementalDiff, isTmuxAvailable, listSessions, heartbeat } from "./tmux.ts";
 import { readAgentLog, generateContextSummary } from "./agent-log.ts";
-import { extractSessionId, findSessionFile, generateSessionReport } from "./session-parser.ts";
+import {
+  extractSessionId,
+  findSessionFile,
+  generateSessionReport,
+  stripAnsiCodes,
+} from "./session-parser.ts";
 import { listClaims, cleanStaleClaims } from "./claims.ts";
 import { runDashboard } from "./dashboard.ts";
 import { readFileSync } from "fs";
@@ -47,6 +52,7 @@ Usage:
   codex-agent sessions                   List active tmux sessions
   codex-agent kill <jobId>               Kill running job
   codex-agent clean                      Clean old completed jobs
+  codex-agent delete <jobId>             Delete a job and its files
   codex-agent health                     Check tmux and codex availability
   codex-agent report <jobId>             Full agent report with diff stats
   codex-agent log                        Show agents.log
@@ -122,17 +128,7 @@ interface Options {
   retry: number;
 }
 
-export function stripAnsiCodes(text: string): string {
-  return text
-    // Remove ANSI escape sequences (colors, cursor movements, etc)
-    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
-    // Remove other escape sequences (OSC, etc)
-    .replace(/\x1b\][^\x07]*\x07/g, '')
-    // Remove carriage returns (used for spinner overwrites)
-    .replace(/\r/g, '')
-    // Remove other control characters except newline and tab
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
-}
+export { stripAnsiCodes };
 
 function parseArgs(args: string[]): {
   command: string;
@@ -276,6 +272,17 @@ export function formatDuration(ms: number): string {
   }
 }
 
+function getTmuxInstallHint(): string {
+  switch (process.platform) {
+    case "darwin":
+      return "brew install tmux";
+    case "linux":
+      return "sudo apt-get install tmux (or your package manager)";
+    default:
+      return "Install tmux for your platform";
+  }
+}
+
 function formatJobStatus(job: Job): string {
   const elapsed = job.startedAt
     ? formatDuration(
@@ -299,16 +306,10 @@ function refreshJobsForDisplay(jobs: Job[]): Job[] {
 }
 
 function sortJobsRunningFirst(jobs: Job[]): Job[] {
-  const statusRank: Record<Job["status"], number> = {
-    running: 0,
-    pending: 1,
-    failed: 2,
-    cancelled: 3,
-    completed: 4,
-  };
-
   return [...jobs].sort((a, b) => {
-    const rankDiff = statusRank[a.status] - statusRank[b.status];
+    const rankDiff =
+      (statusRank[a.status] ?? Number.MAX_SAFE_INTEGER) -
+      (statusRank[b.status] ?? Number.MAX_SAFE_INTEGER);
     if (rankDiff !== 0) return rankDiff;
     return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
   });
@@ -335,7 +336,7 @@ async function main() {
         // Check tmux
         if (!isTmuxAvailable()) {
           console.error("tmux not found");
-          console.error("Install with: brew install tmux");
+          console.error(`Install with: ${getTmuxInstallHint()}`);
           process.exit(1);
         }
         console.log("tmux: OK");
@@ -377,7 +378,18 @@ async function main() {
         // Check tmux first
         if (!isTmuxAvailable()) {
           console.error("Error: tmux is required but not installed");
-          console.error("Install with: brew install tmux");
+          console.error(`Install with: ${getTmuxInstallHint()}`);
+          process.exit(1);
+        }
+
+        const { spawnSync } = await import("child_process");
+        const codexCheck = spawnSync("codex", ["--version"], {
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        if (codexCheck.status !== 0) {
+          console.error("Error: codex CLI is required but not installed");
+          console.error("Install with: npm install -g @openai/codex");
           process.exit(1);
         }
 
@@ -431,7 +443,6 @@ async function main() {
 
           if (job.status === "failed" && attempt < options.retry) {
             console.error(`Attempt ${attempt + 1} failed: ${job.error}. Retrying...`);
-            const { spawnSync } = await import("child_process");
             spawnSync("sleep", ["2"]);
             return startWithRetry(attempt + 1);
           }
@@ -440,6 +451,10 @@ async function main() {
         };
 
         const job = await startWithRetry();
+        if (job.status === "failed") {
+          console.error("Job failed to start: " + (job.error || "unknown error"));
+          process.exit(1);
+        }
 
         console.log(`Job started: ${job.id}`);
         console.log(`Model: ${job.model} (${job.reasoningEffort})`);
@@ -511,6 +526,10 @@ async function main() {
         assertValidJobId(jobId);
         const linesValue = positional[1];
         const lines = linesValue ? parseInt(linesValue, 10) : 50;
+        if (!Number.isFinite(lines) || lines < 1) {
+          console.error("Invalid line count: " + linesValue);
+          process.exit(1);
+        }
         let output = getJobOutput(jobId, lines);
 
         if (output) {
@@ -606,15 +625,10 @@ async function main() {
         if (options.json) {
           const payload = getJobsJson();
           const limit = options.jobsAll ? null : options.jobsLimit;
-          const statusRank: Record<Job["status"], number> = {
-            running: 0,
-            pending: 1,
-            failed: 2,
-            cancelled: 3,
-            completed: 4,
-          };
           payload.jobs.sort((a, b) => {
-            const rankDiff = statusRank[a.status] - statusRank[b.status];
+            const rankDiff =
+              (statusRank[a.status] ?? Number.MAX_SAFE_INTEGER) -
+              (statusRank[b.status] ?? Number.MAX_SAFE_INTEGER);
             if (rankDiff !== 0) return rankDiff;
             return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
           });
@@ -696,6 +710,7 @@ async function main() {
 
       case "report": {
         const jobId = requirePositional(positional, 0, "Error: No job ID provided");
+        assertValidJobId(jobId);
         const job = refreshJobStatus(jobId);
         if (!job) {
           console.error(`Job ${jobId} not found`);
@@ -826,39 +841,9 @@ async function main() {
       }
 
       default:
-        // Treat as prompt for start command
-        if (command) {
-          // Check tmux first
-          if (!isTmuxAvailable()) {
-            console.error("Error: tmux is required but not installed");
-            console.error("Install with: brew install tmux");
-            process.exit(1);
-          }
-
-          const prompt = [command, ...positional].join(" ");
-
-          if (options.dryRun) {
-            const tokens = estimateTokens(prompt, options.model);
-            console.log(`Would send ~${tokens.toLocaleString()} tokens`);
-            process.exit(0);
-          }
-
-          const job = startJob({
-            prompt,
-            model: options.model,
-            reasoningEffort: options.reasoning,
-            sandbox: options.sandbox,
-            parentSessionId: options.parentSessionId ?? undefined,
-            cwd: options.dir,
-            claims: options.claims.length > 0 ? options.claims : undefined,
-          });
-
-          console.log(`Job started: ${job.id}`);
-          console.log(`tmux session: ${job.tmuxSession}`);
-          console.log(`Attach: tmux attach -t ${job.tmuxSession}`);
-        } else {
-          console.log(HELP);
-        }
+        console.error("Unknown command: " + command);
+        console.log(HELP);
+        process.exit(1);
     }
   } catch (err) {
     console.error("Error:", (err as Error).message);
