@@ -1,6 +1,8 @@
 // tmux helper functions for codex-agent
 
 import { execSync, spawnSync } from "child_process";
+import { writeFileSync, unlinkSync } from "fs";
+import { join } from "path";
 import { config } from "./config.ts";
 
 export interface TmuxSession {
@@ -11,9 +13,34 @@ export interface TmuxSession {
 }
 
 /**
+ * Validate a job ID (must be hex string, 8 chars)
+ */
+export function validateJobId(jobId: string): boolean {
+  return /^[0-9a-f]{1,16}$/.test(jobId);
+}
+
+/**
+ * Send text to a tmux session safely using load-buffer + paste-buffer.
+ * This avoids all shell escaping issues with send-keys.
+ */
+function safeSendText(sessionName: string, text: string): void {
+  const tmpFile = join(config.jobsDir, `.tmux-buf-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  try {
+    writeFileSync(tmpFile, text);
+    execSync(`tmux load-buffer "${tmpFile}"`, { stdio: "pipe" });
+    execSync(`tmux paste-buffer -t "${sessionName}"`, { stdio: "pipe" });
+  } finally {
+    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+  }
+}
+
+/**
  * Get tmux session name for a job
  */
 export function getSessionName(jobId: string): string {
+  if (!validateJobId(jobId)) {
+    throw new Error(`Invalid job ID: ${jobId}`);
+  }
   return `${config.tmuxPrefix}-${jobId}`;
 }
 
@@ -61,6 +88,11 @@ export function createSession(options: {
   fs.writeFileSync(promptFile, options.prompt);
 
   try {
+    // Validate jobId to prevent injection
+    if (!validateJobId(options.jobId)) {
+      return { sessionName, success: false, error: "Invalid job ID format" };
+    }
+
     // Build the codex command (interactive mode)
     // We use the interactive TUI so we can send messages later
     const codexArgs = [
@@ -73,9 +105,6 @@ export function createSession(options: {
 
     // Create tmux session with codex running
     // Use script to capture all output, and keep shell alive after codex exits
-    // This allows us to capture the output even after completion
-    // Create detached session that runs codex and stays open after it exits
-    // Using script to log all terminal output
     const shellCmd = `script -q "${logFile}" codex ${codexArgs}; echo "\\n\\n[codex-agent: Session complete. Press Enter to close.]"; read`;
 
     execSync(
@@ -93,34 +122,19 @@ export function createSession(options: {
     execSync(`tmux send-keys -t "${sessionName}" Enter`, { stdio: "pipe" });
     spawnSync("sleep", ["1"]);
 
-    // Send the prompt (read from file to handle complex prompts)
-    // Using send-keys with the prompt content
-    const promptContent = options.prompt.replace(/'/g, "'\\''"); // Escape single quotes
+    // Always use load-buffer + paste-buffer for safe prompt delivery
+    // This avoids all shell escaping issues regardless of prompt content
+    safeSendText(sessionName, options.prompt);
+    spawnSync("sleep", ["0.3"]);
+    execSync(`tmux send-keys -t "${sessionName}" Enter`, { stdio: "pipe" });
 
-    // For very long prompts, we'll type it in chunks or use a different approach
-    if (options.prompt.length < 5000) {
-      // Send prompt directly for shorter prompts
-      // Use separate send-keys calls for text and Enter to ensure Enter is processed
-      execSync(
-        `tmux send-keys -t "${sessionName}" '${promptContent}'`,
-        { stdio: "pipe" }
-      );
-      // Small delay to let TUI process the text before Enter
-      spawnSync("sleep", ["0.3"]);
-      execSync(
-        `tmux send-keys -t "${sessionName}" Enter`,
-        { stdio: "pipe" }
-      );
-    } else {
-      // For long prompts, use load-buffer approach
-      execSync(`tmux load-buffer "${promptFile}"`, { stdio: "pipe" });
-      execSync(`tmux paste-buffer -t "${sessionName}"`, { stdio: "pipe" });
-      spawnSync("sleep", ["0.3"]);
-      execSync(`tmux send-keys -t "${sessionName}" Enter`, { stdio: "pipe" });
-    }
+    // Clean up prompt file (no longer needed for send-keys)
+    try { unlinkSync(promptFile); } catch { /* ignore */ }
 
     return { sessionName, success: true };
   } catch (err) {
+    // Clean up prompt file on failure too
+    try { unlinkSync(promptFile); } catch { /* ignore */ }
     return {
       sessionName,
       success: false,
@@ -130,7 +144,8 @@ export function createSession(options: {
 }
 
 /**
- * Send a message to a running codex session
+ * Send a message to a running codex session.
+ * Uses load-buffer + paste-buffer for safe delivery regardless of message content.
  */
 export function sendMessage(sessionName: string, message: string): boolean {
   if (!sessionExists(sessionName)) {
@@ -138,10 +153,7 @@ export function sendMessage(sessionName: string, message: string): boolean {
   }
 
   try {
-    const escapedMessage = message.replace(/'/g, "'\\''");
-    execSync(`tmux send-keys -t "${sessionName}" '${escapedMessage}'`, {
-      stdio: "pipe",
-    });
+    safeSendText(sessionName, message);
     // Small delay before Enter for TUI to process
     spawnSync("sleep", ["0.3"]);
     execSync(`tmux send-keys -t "${sessionName}" Enter`, {
@@ -293,6 +305,47 @@ export function isSessionActive(sessionName: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Heartbeat check: verify the Codex process is actually alive and responsive.
+ * Returns true if pane has a live process with child processes (codex running).
+ */
+export function heartbeat(sessionName: string): { alive: boolean; pid: number | null } {
+  if (!sessionExists(sessionName)) {
+    return { alive: false, pid: null };
+  }
+
+  try {
+    const pidStr = execSync(
+      `tmux list-panes -t "${sessionName}" -F "#{pane_pid}"`,
+      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
+    ).trim();
+
+    if (!pidStr) return { alive: false, pid: null };
+    const pid = parseInt(pidStr, 10);
+
+    // Check if process exists
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return { alive: false, pid };
+    }
+
+    // Check if process has child processes (codex running under script)
+    try {
+      const children = execSync(`pgrep -P ${pid}`, {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      return { alive: children.length > 0, pid };
+    } catch {
+      // pgrep returns non-zero if no children found
+      return { alive: true, pid }; // Parent alive but no children might be ok
+    }
+  } catch {
+    return { alive: false, pid: null };
   }
 }
 

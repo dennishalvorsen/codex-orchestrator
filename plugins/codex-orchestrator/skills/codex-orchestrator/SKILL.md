@@ -130,7 +130,40 @@ codex --login
 
 **All dependencies use official sources only.** tmux from system package managers, Bun from bun.sh, Codex CLI from npm. No third-party scripts or unknown URLs.
 
-## The Factory Pipeline
+## Pipeline Modes
+
+### Choosing the Right Pipeline
+
+Not every task needs the full 7-step pipeline. Choose based on complexity:
+
+| Complexity | Pipeline | When to use |
+|-----------|----------|-------------|
+| **Simple** | Fast Track (3 steps) | Bug fixes, small changes, single-file edits, config updates |
+| **Medium** | Standard (5 steps) | New features, multi-file changes, refactors |
+| **Complex** | Full Pipeline (7 steps) | Architecture changes, new systems, large features |
+
+**Auto-detect complexity:**
+- Single file mentioned + clear fix = **Fast Track**
+- Multiple files or "add feature" = **Standard**
+- "refactor", "redesign", "new system", PRD needed = **Full Pipeline**
+
+### Fast Track Pipeline (Simple Tasks)
+
+```
+USER'S REQUEST
+     |
+     v
+1. RESEARCH         (Codex, read-only)
+     |
+2. IMPLEMENTATION   (Codex, workspace-write)
+     |
+3. REVIEW           (Codex, read-only)
+```
+
+Use for: bug fixes, small features, config changes, dependency updates.
+Skip: ideation, synthesis, PRD, separate testing (review agent verifies).
+
+### The Full Factory Pipeline
 
 ```
 USER'S REQUEST
@@ -176,6 +209,65 @@ Detect where you are based on context:
 4. **Codebase Map Always** - Every agent gets `--map` for context.
 5. **PRDs Drive Implementation** - Complex changes get PRDs in docs/prds/.
 6. **Patience is Required** - Agents take time. This is normal and expected.
+
+## Definition of Done (Quality Checklists)
+
+Every pipeline stage has explicit completion criteria. Inject these into agent prompts.
+
+### Research Stage — Done When:
+- [ ] All relevant files identified and read
+- [ ] Architecture/data flow documented
+- [ ] Risks and edge cases noted
+- [ ] Findings written to agents.log
+
+### Implementation Stage — Done When:
+- [ ] TypeScript compiles without errors (`bun run typecheck` or `tsc --noEmit`)
+- [ ] No `any` types introduced
+- [ ] All API calls have error handling
+- [ ] Existing tests still pass
+- [ ] New functionality has at least one test
+- [ ] No hardcoded secrets or credentials
+- [ ] Changes follow existing code patterns/conventions
+
+### Review Stage — Done When:
+- [ ] OWASP top 10 checked (XSS, injection, auth bypass)
+- [ ] Error handling reviewed (no swallowed errors)
+- [ ] Data integrity verified (no accidental deletion/corruption)
+- [ ] Performance impact assessed
+- [ ] Findings documented
+
+### Testing Stage — Done When:
+- [ ] Unit tests for new functions/methods
+- [ ] Edge cases covered (empty input, null, boundaries)
+- [ ] All tests pass
+- [ ] No flaky tests introduced
+
+### Quality Prompt Templates
+
+When spawning implementation agents, include these quality requirements in the prompt:
+
+**For Implementation agents:**
+```
+QUALITY REQUIREMENTS (mandatory):
+1. TypeScript must compile without errors
+2. No `any` types - use proper typing
+3. All external API calls must have try/catch with meaningful error messages
+4. Run existing tests before and after changes - they must pass
+5. Add at least one test for new functionality
+6. Follow the existing code style and patterns in this codebase
+7. No hardcoded secrets, API keys, or credentials
+```
+
+**For Review agents:**
+```
+REVIEW CHECKLIST (check all):
+1. Security: OWASP top 10 vulnerabilities (XSS, injection, auth bypass, CSRF)
+2. Error handling: No swallowed errors, proper error messages, consistent patterns
+3. Data integrity: No accidental data loss, proper validation, safe migrations
+4. Performance: No N+1 queries, no unbounded loops, proper pagination
+5. Code quality: Follows project conventions, no dead code, proper naming
+Report each item as PASS/FAIL with explanation.
+```
 
 ## Agent Timing Expectations (CRITICAL - READ THIS)
 
@@ -294,7 +386,30 @@ tmux attach -t codex-agent-<jobId>
 ```bash
 codex-agent kill <jobId>           # stop agent (last resort)
 codex-agent clean                  # remove old jobs (>7 days)
-codex-agent health                 # verify codex + tmux available
+codex-agent health                 # verify codex + tmux + agent heartbeats
+```
+
+### Reports & Context
+
+```bash
+codex-agent report <jobId>         # full report: diff stats, tokens, errors, summary
+codex-agent log                    # show agents.log from project root
+codex-agent context                # generate context recovery summary (use after compaction)
+codex-agent dashboard              # live terminal dashboard of all agents
+```
+
+### Coordination
+
+```bash
+# Claim files to prevent multi-agent conflicts
+codex-agent start "Implement auth" --map --claim "src/auth/**"
+codex-agent claims                 # show active file claims
+
+# Limit context injection size
+codex-agent start "Fix bug" -f "src/**/*.ts" --context-budget 5000
+
+# Auto-retry on failure
+codex-agent start "Implement feature" --map --retry 2
 ```
 
 ## Flags Reference
@@ -310,6 +425,9 @@ codex-agent health                 # verify codex + tmux available
 | `--json` | | flag | JSON output (jobs only) |
 | `--strip-ansi` | | flag | Clean output |
 | `--dry-run` | | flag | Preview prompt without executing |
+| `--claim` | | glob | Claim file ownership (repeatable) |
+| `--context-budget` | | number | Max tokens for file context |
+| `--retry` | | number | Auto-retry count on failure |
 
 ## Jobs JSON Output
 
@@ -559,16 +677,16 @@ codex-agent start "Implement Phase 2 of PRD" --map
 
 ## Quality Gates
 
-Before marking any stage complete:
+Before marking any stage complete, verify against the Definition of Done checklists above:
 
-| Stage | Gate |
-|-------|------|
-| Research | Findings documented in agents.log |
-| Synthesis | Clear understanding, contradictions resolved |
-| PRD | User reviewed and approved |
-| Implementation | Typecheck passes, no new errors |
-| Review | Security + quality checks pass |
-| Testing | Tests written and passing |
+| Stage | Gate | Verification |
+|-------|------|--------------|
+| Research | Findings documented in agents.log | `codex-agent log` |
+| Synthesis | Clear understanding, contradictions resolved | You review findings |
+| PRD | User reviewed and approved | User confirmation |
+| Implementation | Typecheck passes, no new errors, tests pass | `codex-agent report <id>` |
+| Review | Security + quality checks pass, all items PASS | `codex-agent report <id>` |
+| Testing | Tests written and passing | `codex-agent report <id>` |
 
 ## Error Recovery
 
@@ -601,14 +719,20 @@ If `codex-agent send` doesn't seem to work:
 After Claude's context compacts, immediately:
 
 ```bash
-# Check agents.log for state
-# (Read agents.log in project root)
+# Generate full context recovery summary
+codex-agent context
 
-# Check running agents
+# Check agents.log for state
+codex-agent log
+
+# Check running agents with structured data
 codex-agent jobs --json
+
+# Get detailed report for any completed agent
+codex-agent report <jobId>
 ```
 
-Read the log. Understand current stage. Resume from where you left off.
+The `context` command generates a complete summary of all running, completed, and failed agents plus recent agents.log entries. This gives you everything needed to resume from where you left off.
 
 ## When NOT to Use This Pipeline
 

@@ -15,6 +15,18 @@ export type ParsedSessionData = {
   summary: string | null;
 };
 
+export type DiffStats = {
+  files_added: string[];
+  files_updated: string[];
+  files_deleted: string[];
+};
+
+export type SessionReport = ParsedSessionData & {
+  diff_stats: DiffStats;
+  warnings: string[];
+  errors: string[];
+};
+
 const SESSION_EXTENSIONS = new Set<string>([".jsonl", ".json"]);
 
 function getCodexHome(): string | null {
@@ -265,4 +277,115 @@ export function parseSessionFile(sessionFilePath: string): ParsedSessionData | n
   }
 
   return parseJsonSession(content);
+}
+
+/**
+ * Extract diff statistics from patch texts, separating adds/updates/deletes
+ */
+function extractDiffStats(patchText: string): DiffStats {
+  const stats: DiffStats = { files_added: [], files_updated: [], files_deleted: [] };
+
+  for (const line of patchText.split("\n")) {
+    if (line.startsWith("*** Add File: ")) {
+      stats.files_added.push(line.slice("*** Add File: ".length).trim());
+    } else if (line.startsWith("*** Update File: ")) {
+      stats.files_updated.push(line.slice("*** Update File: ".length).trim());
+    } else if (line.startsWith("*** Delete File: ")) {
+      stats.files_deleted.push(line.slice("*** Delete File: ".length).trim());
+    }
+  }
+
+  return stats;
+}
+
+/**
+ * Known error patterns to detect in log output
+ */
+const ERROR_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /rate.?limit/i, label: "Rate limit hit" },
+  { pattern: /429\s*(Too Many Requests)?/i, label: "Rate limit (429)" },
+  { pattern: /auth.*expired|token.*expired|unauthorized/i, label: "Auth expired" },
+  { pattern: /context.*overflow|context.*length.*exceeded/i, label: "Context overflow" },
+  { pattern: /ENOMEM|out of memory/i, label: "Out of memory" },
+  { pattern: /ENOSPC|no space left/i, label: "Disk full" },
+  { pattern: /connection.*refused|ECONNREFUSED/i, label: "Connection refused" },
+  { pattern: /timeout|ETIMEDOUT/i, label: "Timeout" },
+];
+
+const WARNING_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /deprecat/i, label: "Deprecation warning" },
+  { pattern: /warning:\s/i, label: "Warning" },
+  { pattern: /⚠|warn/i, label: "Warning indicator" },
+];
+
+/**
+ * Detect known error and warning patterns in log content
+ */
+export function detectIssues(logContent: string): { warnings: string[]; errors: string[] } {
+  const clean = stripAnsiCodes(logContent);
+  const warnings = new Set<string>();
+  const errors = new Set<string>();
+
+  for (const { pattern, label } of ERROR_PATTERNS) {
+    if (pattern.test(clean)) errors.add(label);
+  }
+
+  for (const { pattern, label } of WARNING_PATTERNS) {
+    if (pattern.test(clean)) warnings.add(label);
+  }
+
+  return {
+    warnings: Array.from(warnings),
+    errors: Array.from(errors),
+  };
+}
+
+/**
+ * Generate a full report for a session, including diff stats and detected issues
+ */
+export function generateSessionReport(
+  sessionFilePath: string | null,
+  logContent: string | null
+): SessionReport {
+  const baseData = sessionFilePath ? parseSessionFile(sessionFilePath) : null;
+
+  const diffStats: DiffStats = { files_added: [], files_updated: [], files_deleted: [] };
+  const { warnings, errors } = logContent ? detectIssues(logContent) : { warnings: [], errors: [] };
+
+  // If we have session data, try to get diff stats from patches
+  if (sessionFilePath) {
+    try {
+      const content = readFileSync(sessionFilePath, "utf-8");
+      if (sessionFilePath.endsWith(".jsonl")) {
+        for (const line of content.split("\n")) {
+          if (!line.trim()) continue;
+          const record = parseJsonLine(line);
+          if (!isRecord(record)) continue;
+          const payload = isRecord(record.payload) ? record.payload : null;
+          if (!payload) continue;
+          const payloadType = typeof payload.type === "string" ? payload.type : null;
+          const toolType = payloadType === "custom_tool_call" || payloadType === "function_call";
+          const toolName = typeof payload.name === "string" ? payload.name : null;
+          if (toolType && toolName === "apply_patch") {
+            const patchText = extractPatchText(payload.input ?? payload.arguments);
+            if (patchText) {
+              const stats = extractDiffStats(patchText);
+              diffStats.files_added.push(...stats.files_added);
+              diffStats.files_updated.push(...stats.files_updated);
+              diffStats.files_deleted.push(...stats.files_deleted);
+            }
+          }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  return {
+    tokens: baseData?.tokens ?? null,
+    files_modified: baseData?.files_modified ?? null,
+    summary: baseData?.summary ?? null,
+    diff_stats: diffStats,
+    warnings,
+    errors,
+  };
 }

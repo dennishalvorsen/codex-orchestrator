@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync, readFileSync, readdirSync, unlinkSync, statSy
 import { join } from "path";
 import { config, ReasoningEffort, SandboxMode } from "./config.ts";
 import { randomBytes } from "crypto";
-import { extractSessionId, findSessionFile, parseSessionFile, type ParsedSessionData } from "./session-parser.ts";
+import { extractSessionId, findSessionFile, parseSessionFile, detectIssues, type ParsedSessionData } from "./session-parser.ts";
 import {
   createSession,
   killSession,
@@ -16,6 +16,8 @@ import {
   sendMessage,
   sendControl,
 } from "./tmux.ts";
+import { logJobSpawn, logJobComplete } from "./agent-log.ts";
+import { checkOverlaps, addClaim, removeClaims, type Claim } from "./claims.ts";
 
 export interface Job {
   id: string;
@@ -210,6 +212,9 @@ export function deleteJob(jobId: string): boolean {
     killSession(job.tmuxSession);
   }
 
+  // Clean up file claims
+  try { removeClaims(jobId); } catch { /* non-critical */ }
+
   try {
     unlinkSync(getJobPath(jobId));
     // Clean up prompt file if exists
@@ -231,6 +236,8 @@ export interface StartJobOptions {
   sandbox?: SandboxMode;
   parentSessionId?: string;
   cwd?: string;
+  claims?: string[];
+  retry?: number;
 }
 
 export function startJob(options: StartJobOptions): Job {
@@ -253,6 +260,18 @@ export function startJob(options: StartJobOptions): Job {
 
   saveJob(job);
 
+  // Register file claims and warn about overlaps
+  if (options.claims && options.claims.length > 0) {
+    for (const pattern of options.claims) {
+      const overlaps = checkOverlaps(jobId, pattern);
+      if (overlaps.length > 0) {
+        const overlapInfo = overlaps.map((o) => `${o.jobId}:${o.pattern}`).join(", ");
+        console.error(`Warning: Claim "${pattern}" overlaps with: ${overlapInfo}`);
+      }
+      addClaim(jobId, pattern);
+    }
+  }
+
   // Create tmux session with codex
   const result = createSession({
     jobId,
@@ -274,6 +293,10 @@ export function startJob(options: StartJobOptions): Job {
   }
 
   saveJob(job);
+
+  // Auto-log spawn to agents.log
+  try { logJobSpawn(job); } catch { /* non-critical */ }
+
   return job;
 }
 
@@ -389,6 +412,7 @@ export function refreshJobStatus(jobId: string): Job | null {
         // No log file
       }
       saveJob(job);
+      try { logJobComplete(job); } catch { /* non-critical */ }
     } else {
       // Session exists - check if codex is still running
       // Look for the "[codex-agent: Session complete" marker in output
@@ -402,12 +426,34 @@ export function refreshJobStatus(jobId: string): Job | null {
           job.result = fullOutput;
         }
         saveJob(job);
-      } else if (isInactiveTimedOut(job)) {
-        killSession(job.tmuxSession);
-        job.status = "failed";
-        job.error = `Timed out after ${config.defaultTimeout} minutes of inactivity`;
-        job.completedAt = new Date().toISOString();
-        saveJob(job);
+        try { logJobComplete(job); } catch { /* non-critical */ }
+      } else {
+        // Check for known error patterns in recent output
+        const recentOutput = capturePane(job.tmuxSession, { lines: 50 });
+        if (recentOutput) {
+          const issues = detectIssues(recentOutput);
+          if (issues.errors.length > 0) {
+            job.status = "failed";
+            job.error = `Detected: ${issues.errors.join(", ")}`;
+            job.completedAt = new Date().toISOString();
+            saveJob(job);
+            try { logJobComplete(job); } catch { /* non-critical */ }
+          } else if (isInactiveTimedOut(job)) {
+            killSession(job.tmuxSession);
+            job.status = "failed";
+            job.error = `Timed out after ${config.defaultTimeout} minutes of inactivity`;
+            job.completedAt = new Date().toISOString();
+            saveJob(job);
+            try { logJobComplete(job); } catch { /* non-critical */ }
+          }
+        } else if (isInactiveTimedOut(job)) {
+          killSession(job.tmuxSession);
+          job.status = "failed";
+          job.error = `Timed out after ${config.defaultTimeout} minutes of inactivity`;
+          job.completedAt = new Date().toISOString();
+          saveJob(job);
+          try { logJobComplete(job); } catch { /* non-critical */ }
+        }
       }
     }
   }
