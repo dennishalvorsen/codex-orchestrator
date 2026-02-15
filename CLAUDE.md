@@ -51,6 +51,19 @@ plugins/codex-orchestrator/         # the plugin
 - **Runtime**: Bun, tmux, codex CLI
 - **NPM**: glob (file matching)
 
+## Allowed Commands
+
+The following commands may be run without asking for user confirmation:
+
+- `codex-agent kill <jobId>` - Kill a running agent
+- `codex-agent clean` - Clean old completed jobs
+- `codex-agent jobs` / `codex-agent jobs --json` - List jobs
+- `codex-agent capture <jobId>` - Capture agent output
+- `codex-agent status <jobId>` - Check job status
+- `codex-agent health` - Health check
+- `bun run typecheck` - Run TypeScript type checking
+- `bun test` - Run test suite
+
 ## Notes
 
 - Jobs stored in `~/.codex-agent/jobs/`

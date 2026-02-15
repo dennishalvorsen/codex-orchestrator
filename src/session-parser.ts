@@ -125,7 +125,7 @@ function parseTokensFromInfo(info: Record<string, unknown>): SessionTokens | nul
   };
 }
 
-function parseJsonlSession(content: string): ParsedSessionData {
+export function parseJsonlSession(content: string): ParsedSessionData {
   const filesModified = new Set<string>();
   let tokens: SessionTokens | null = null;
   let summary: string | null = null;
@@ -203,7 +203,7 @@ function parseJsonSession(content: string): ParsedSessionData | null {
   };
 }
 
-function stripAnsiCodes(text: string): string {
+export function stripAnsiCodes(text: string): string {
   // Remove ANSI escape sequences
   return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\[[\d;]*m/g, '');
 }

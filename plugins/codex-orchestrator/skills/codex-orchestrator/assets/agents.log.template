@@ -1,72 +1,98 @@
 # Agents Log
 
 ## Session: [TIMESTAMP]
-Goal: [What we're trying to accomplish]
-PRD: [Path to PRD if exists, or "TBD"]
-Stage: [ideation | research | synthesis | prd | implementation | review | testing]
+Coordinator: [COORDINATOR]
+Claude instance: [CLAUDE_INSTANCE]
+Repo path: [REPO_PATH]
+Branch: [BRANCH]
+Commit: [COMMIT]
+Workdir: [WORKDIR]
+Goal: [WHAT_WE_ARE_TRYING_TO_ACCOMPLISH]
+PRD: [PATH_TO_PRD_OR_TBD]
+Stage: [IDEATION | RESEARCH | SYNTHESIS | PRD | IMPLEMENTATION | REVIEW | TESTING]
 
 ---
 
-### Spawned: [jobId] - [time]
-Type: [research | implementation | review | testing]
-Prompt: [The prompt sent to the agent]
-Reasoning: [low | medium | high | xhigh]
-Sandbox: [read-only | workspace-write]
-Context: [Any relevant files included with -f]
+### Spawned: [JOB_ID] - [TIME]
+Type: [RESEARCH | IMPLEMENTATION | REVIEW | TESTING]
+Command: [EXACT_CODEX_AGENT_COMMAND]
+Parent job: [PARENT_JOB_ID_OR_NONE]
+Scope: [OWNERSHIP_SCOPE]
+Claimed files/modules: [FILES_OR_MODULES]
+Prompt: [PROMPT_SENT_TO_AGENT]
+Reasoning: [LOW | MEDIUM | HIGH | XHIGH]
+Sandbox: [READ-ONLY | WORKSPACE-WRITE | DANGER-FULL-ACCESS]
+Context: [RELEVANT_FILES_INCLUDED_WITH_-F]
 
-### Complete: [jobId] - [time]
-Status: [success | failed | partial]
+### Update: [JOB_ID] - [TIME]
+Status: [RUNNING | WAITING | REDIRECTED | BLOCKED | COMPLETED]
+Last capture: [LATEST_OUTPUT_SUMMARY]
+Blocker: [NONE_OR_BLOCKER_DESCRIPTION]
+Action sent: [MESSAGE_OR_CONTROL_SENT]
+
+### Complete: [JOB_ID] - [TIME]
+Status: [SUCCESS | FAILED | PARTIAL]
+Duration: [HH:MM:SS]
+Token usage: [INPUT: N | OUTPUT: N | TOTAL: N]
 Findings:
-- [Key finding 1]
-- [Key finding 2]
-Files: [Relevant files identified or modified]
-Recommendations: [If any]
+- [KEY_FINDING_1]
+- [KEY_FINDING_2]
+Files: [RELEVANT_FILES_IDENTIFIED_OR_MODIFIED]
+Recommendations: [RECOMMENDATIONS_IF_ANY]
 
-### Synthesis - [time]
+### Synthesis - [TIME]
 Combined understanding:
-[Summary of combined findings from multiple agents]
+[SUMMARY_OF_COMBINED_FINDINGS_FROM_MULTIPLE_AGENTS]
 
 Signal (keep):
-- [Valuable insight 1]
-- [Valuable insight 2]
+- [VALUABLE_INSIGHT_1]
+- [VALUABLE_INSIGHT_2]
 
 Noise (discard):
-- [Over-engineered suggestion]
-- [Misunderstood context]
+- [OVER_ENGINEERED_SUGGESTION]
+- [MISUNDERSTOOD_CONTEXT]
 
 Approach:
-1. [Step 1]
-2. [Step 2]
+1. [STEP_1]
+2. [STEP_2]
 
-Next: [What to do next]
+Next: [WHAT_TO_DO_NEXT]
 
-### PRD Created - [time]
-Path: docs/prds/[name].md
-Status: [draft | ready for review | approved]
+### PRD Created - [TIME]
+Path: [DOCS_PRDS_PATH]
+Status: [DRAFT | READY_FOR_REVIEW | APPROVED]
 
-### Implementation Started - [time]
-Agent: [jobId]
-PRD: [path]
-Phase: [1 | 2 | etc]
+### Implementation Started - [TIME]
+Agent: [JOB_ID]
+PRD: [PRD_PATH]
+Phase: [PHASE]
 
-### Review Complete - [time]
-Agent: [jobId]
-Type: [security | quality | simplification]
-Result: [passed | failed with issues]
+### Review Complete - [TIME]
+Agent: [JOB_ID]
+Type: [SECURITY | QUALITY | SIMPLIFICATION]
+Result: [PASSED | FAILED_WITH_ISSUES]
 Issues:
-- [Issue 1 if any]
+- [ISSUE_1_IF_ANY]
 
-### Testing Complete - [time]
-Agent: [jobId]
-Result: [all passing | X failures]
-Coverage: [if applicable]
+### Testing Complete - [TIME]
+Agent: [JOB_ID]
+Verification commands:
+- `[COMMAND_1]`
+- `[COMMAND_2]`
+Results:
+- [PASS | FAIL] [COMMAND_OR_SUITE]: [KEY_OUTPUT]
+Open risks:
+- [RISK_1]
+Decision: [SHIP | FIX_REQUIRED | PARTIAL_ACCEPT]
+Next command: `[NEXT_COMMAND]`
 
 ---
 
 ## Context for Next Session
 
-Current stage: [Where we are in the pipeline]
-Running agents: [List job IDs and their purpose]
-Pending work: [What needs to happen next]
-Blockers: [Anything blocking progress]
-Last action: [What was just completed]
+Current stage: [CURRENT_STAGE]
+Running agents: [JOB_IDS_AND_PURPOSE]
+Pending work: [NEXT_REQUIRED_WORK]
+Blockers: [CURRENT_BLOCKERS]
+Last action: [MOST_RECENTLY_COMPLETED_ACTION]
+Last codex-agent command run: `[LAST_CODEX_AGENT_COMMAND]`

@@ -3,7 +3,9 @@
 // Codex Agent CLI - Delegate tasks to GPT Codex agents with tmux integration
 // Designed for Claude Code orchestration with bidirectional communication
 
-import { config, ReasoningEffort, SandboxMode } from "./config.ts";
+import { config, ReasoningEffort, SandboxMode } from "./config.js";
+import { resolve } from "path";
+import { fileURLToPath } from "url";
 import {
   startJob,
   loadJob,
@@ -19,9 +21,10 @@ import {
   getAttachCommand,
   Job,
   getJobsJson,
+  assertValidJobId,
 } from "./jobs.ts";
 import { loadFiles, formatPromptWithFiles, estimateTokens, loadCodebaseMap } from "./files.ts";
-import { isTmuxAvailable, listSessions, heartbeat } from "./tmux.ts";
+import { incrementalDiff, isTmuxAvailable, listSessions, heartbeat } from "./tmux.ts";
 import { readAgentLog, generateContextSummary } from "./agent-log.ts";
 import { extractSessionId, findSessionFile, generateSessionReport } from "./session-parser.ts";
 import { listClaims, cleanStaleClaims } from "./claims.ts";
@@ -119,7 +122,7 @@ interface Options {
   retry: number;
 }
 
-function stripAnsiCodes(text: string): string {
+export function stripAnsiCodes(text: string): string {
   return text
     // Remove ANSI escape sequences (colors, cursor movements, etc)
     .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
@@ -156,15 +159,25 @@ function parseArgs(args: string[]): {
 
   const positional: string[] = [];
   let command = "";
+  const readOptionValue = (optionName: string): string => {
+    const value = args[++i];
+    if (value === undefined) {
+      console.error("Missing value for " + optionName);
+      process.exit(1);
+    }
+    return value;
+  };
 
-  for (let i = 0; i < args.length; i++) {
+  let i = 0;
+  for (; i < args.length; i++) {
     const arg = args[i];
+    if (arg === undefined) continue;
 
     if (arg === "-h" || arg === "--help") {
       console.log(HELP);
       process.exit(0);
     } else if (arg === "-r" || arg === "--reasoning") {
-      const level = args[++i] as ReasoningEffort;
+      const level = readOptionValue(arg) as ReasoningEffort;
       if (config.reasoningEfforts.includes(level)) {
         options.reasoning = level;
       } else {
@@ -173,9 +186,9 @@ function parseArgs(args: string[]): {
         process.exit(1);
       }
     } else if (arg === "-m" || arg === "--model") {
-      options.model = args[++i];
+      options.model = readOptionValue(arg);
     } else if (arg === "-s" || arg === "--sandbox") {
-      const mode = args[++i] as SandboxMode;
+      const mode = readOptionValue(arg) as SandboxMode;
       if (config.sandboxModes.includes(mode)) {
         options.sandbox = mode;
       } else {
@@ -184,11 +197,11 @@ function parseArgs(args: string[]): {
         process.exit(1);
       }
     } else if (arg === "-f" || arg === "--file") {
-      options.files.push(args[++i]);
+      options.files.push(readOptionValue(arg));
     } else if (arg === "-d" || arg === "--dir") {
-      options.dir = args[++i];
+      options.dir = readOptionValue(arg);
     } else if (arg === "--parent-session") {
-      options.parentSessionId = args[++i] ?? null;
+      options.parentSessionId = readOptionValue(arg);
     } else if (arg === "--map") {
       options.includeMap = true;
     } else if (arg === "--dry-run") {
@@ -198,7 +211,7 @@ function parseArgs(args: string[]): {
     } else if (arg === "--json") {
       options.json = true;
     } else if (arg === "--limit") {
-      const raw = args[++i];
+      const raw = readOptionValue(arg);
       const parsed = Number(raw);
       if (!Number.isFinite(parsed) || parsed < 1) {
         console.error(`Invalid limit: ${raw}`);
@@ -208,9 +221,9 @@ function parseArgs(args: string[]): {
     } else if (arg === "--all") {
       options.jobsAll = true;
     } else if (arg === "--claim") {
-      options.claims.push(args[++i]);
+      options.claims.push(readOptionValue(arg));
     } else if (arg === "--context-budget") {
-      const raw = args[++i];
+      const raw = readOptionValue(arg);
       const parsed = Number(raw);
       if (!Number.isFinite(parsed) || parsed < 1) {
         console.error(`Invalid context budget: ${raw}`);
@@ -218,13 +231,16 @@ function parseArgs(args: string[]): {
       }
       options.contextBudget = Math.floor(parsed);
     } else if (arg === "--retry") {
-      const raw = args[++i];
+      const raw = readOptionValue(arg);
       const parsed = Number(raw);
       if (!Number.isFinite(parsed) || parsed < 0) {
         console.error(`Invalid retry count: ${raw}`);
         process.exit(1);
       }
       options.retry = Math.floor(parsed);
+    } else if (arg.startsWith("-")) {
+      console.error("Unknown option: " + arg);
+      process.exit(1);
     } else if (!arg.startsWith("-")) {
       if (!command) {
         command = arg;
@@ -237,7 +253,16 @@ function parseArgs(args: string[]): {
   return { command, positional, options };
 }
 
-function formatDuration(ms: number): string {
+function requirePositional(positional: string[], index: number, errorMessage: string): string {
+  const value = positional[index];
+  if (value === undefined) {
+    console.error(errorMessage);
+    process.exit(1);
+  }
+  return value;
+}
+
+export function formatDuration(ms: number): string {
   const seconds = Math.floor(ms / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
@@ -278,7 +303,8 @@ function sortJobsRunningFirst(jobs: Job[]): Job[] {
     running: 0,
     pending: 1,
     failed: 2,
-    completed: 3,
+    cancelled: 3,
+    completed: 4,
   };
 
   return [...jobs].sort((a, b) => {
@@ -376,7 +402,7 @@ async function main() {
         }
 
         if (options.dryRun) {
-          const tokens = estimateTokens(prompt);
+          const tokens = estimateTokens(prompt, options.model);
           console.log(`Would send ~${tokens.toLocaleString()} tokens`);
           console.log(`Model: ${options.model}`);
           console.log(`Reasoning: ${options.reasoning}`);
@@ -432,14 +458,11 @@ async function main() {
       }
 
       case "status": {
-        if (positional.length === 0) {
-          console.error("Error: No job ID provided");
-          process.exit(1);
-        }
-
-        const job = refreshJobStatus(positional[0]);
+        const jobId = requirePositional(positional, 0, "Error: No job ID provided");
+        assertValidJobId(jobId);
+        const job = refreshJobStatus(jobId);
         if (!job) {
-          console.error(`Job ${positional[0]} not found`);
+          console.error(`Job ${jobId} not found`);
           process.exit(1);
         }
 
@@ -469,7 +492,8 @@ async function main() {
           process.exit(1);
         }
 
-        const jobId = positional[0];
+        const jobId = requirePositional(positional, 0, "Error: No job ID provided");
+        assertValidJobId(jobId);
         const message = positional.slice(1).join(" ");
 
         if (sendToJob(jobId, message)) {
@@ -483,13 +507,11 @@ async function main() {
       }
 
       case "capture": {
-        if (positional.length === 0) {
-          console.error("Error: No job ID provided");
-          process.exit(1);
-        }
-
-        const lines = positional[1] ? parseInt(positional[1], 10) : 50;
-        let output = getJobOutput(positional[0], lines);
+        const jobId = requirePositional(positional, 0, "Error: No job ID provided");
+        assertValidJobId(jobId);
+        const linesValue = positional[1];
+        const lines = linesValue ? parseInt(linesValue, 10) : 50;
+        let output = getJobOutput(jobId, lines);
 
         if (output) {
           if (options.stripAnsi) {
@@ -497,56 +519,47 @@ async function main() {
           }
           console.log(output);
         } else {
-          console.error(`Could not capture output for job ${positional[0]}`);
+          console.error(`Could not capture output for job ${jobId}`);
           process.exit(1);
         }
         break;
       }
 
       case "output": {
-        if (positional.length === 0) {
-          console.error("Error: No job ID provided");
-          process.exit(1);
-        }
-
-        let output = getJobFullOutput(positional[0]);
+        const jobId = requirePositional(positional, 0, "Error: No job ID provided");
+        assertValidJobId(jobId);
+        let output = getJobFullOutput(jobId);
         if (output) {
           if (options.stripAnsi) {
             output = stripAnsiCodes(output);
           }
           console.log(output);
         } else {
-          console.error(`Could not get output for job ${positional[0]}`);
+          console.error(`Could not get output for job ${jobId}`);
           process.exit(1);
         }
         break;
       }
 
       case "attach": {
-        if (positional.length === 0) {
-          console.error("Error: No job ID provided");
-          process.exit(1);
-        }
-
-        const attachCmd = getAttachCommand(positional[0]);
+        const jobId = requirePositional(positional, 0, "Error: No job ID provided");
+        assertValidJobId(jobId);
+        const attachCmd = getAttachCommand(jobId);
         if (attachCmd) {
           console.log(attachCmd);
         } else {
-          console.error(`Job ${positional[0]} not found or no tmux session`);
+          console.error(`Job ${jobId} not found or no tmux session`);
           process.exit(1);
         }
         break;
       }
 
       case "watch": {
-        if (positional.length === 0) {
-          console.error("Error: No job ID provided");
-          process.exit(1);
-        }
-
-        const job = loadJob(positional[0]);
+        const jobId = requirePositional(positional, 0, "Error: No job ID provided");
+        assertValidJobId(jobId);
+        const job = loadJob(jobId);
         if (!job || !job.tmuxSession) {
-          console.error(`Job ${positional[0]} not found or no tmux session`);
+          console.error(`Job ${jobId} not found or no tmux session`);
           process.exit(1);
         }
 
@@ -557,11 +570,11 @@ async function main() {
         // Simple polling-based watch
         let lastOutput = "";
         const pollInterval = setInterval(() => {
-          const output = getJobOutput(positional[0], 100);
+          const output = getJobOutput(jobId, 100);
           if (output && output !== lastOutput) {
             // Print only new content
             if (lastOutput) {
-              const newPart = output.replace(lastOutput, "");
+              const newPart = incrementalDiff(lastOutput, output);
               if (newPart.trim()) {
                 process.stdout.write(newPart);
               }
@@ -572,7 +585,7 @@ async function main() {
           }
 
           // Check if job is still running
-          const refreshed = refreshJobStatus(positional[0]);
+          const refreshed = refreshJobStatus(jobId);
           if (refreshed && refreshed.status !== "running") {
             console.error(`\nJob ${refreshed.status}`);
             clearInterval(pollInterval);
@@ -597,7 +610,8 @@ async function main() {
             running: 0,
             pending: 1,
             failed: 2,
-            completed: 3,
+            cancelled: 3,
+            completed: 4,
           };
           payload.jobs.sort((a, b) => {
             const rankDiff = statusRank[a.status] - statusRank[b.status];
@@ -642,15 +656,12 @@ async function main() {
       }
 
       case "kill": {
-        if (positional.length === 0) {
-          console.error("Error: No job ID provided");
-          process.exit(1);
-        }
-
-        if (killJob(positional[0])) {
-          console.log(`Killed job: ${positional[0]}`);
+        const jobId = requirePositional(positional, 0, "Error: No job ID provided");
+        assertValidJobId(jobId);
+        if (killJob(jobId)) {
+          console.log(`Killed job: ${jobId}`);
         } else {
-          console.error(`Could not kill job: ${positional[0]}`);
+          console.error(`Could not kill job: ${jobId}`);
           process.exit(1);
         }
         break;
@@ -670,15 +681,12 @@ async function main() {
       }
 
       case "delete": {
-        if (positional.length === 0) {
-          console.error("Error: No job ID provided");
-          process.exit(1);
-        }
-
-        if (deleteJob(positional[0])) {
-          console.log(`Deleted job: ${positional[0]}`);
+        const jobId = requirePositional(positional, 0, "Error: No job ID provided");
+        assertValidJobId(jobId);
+        if (deleteJob(jobId)) {
+          console.log(`Deleted job: ${jobId}`);
         } else {
-          console.error(`Could not delete job: ${positional[0]}`);
+          console.error(`Could not delete job: ${jobId}`);
           process.exit(1);
         }
         break;
@@ -687,12 +695,7 @@ async function main() {
       // --- New commands ---
 
       case "report": {
-        if (positional.length === 0) {
-          console.error("Error: No job ID provided");
-          process.exit(1);
-        }
-
-        const jobId = positional[0];
+        const jobId = requirePositional(positional, 0, "Error: No job ID provided");
         const job = refreshJobStatus(jobId);
         if (!job) {
           console.error(`Job ${jobId} not found`);
@@ -835,7 +838,7 @@ async function main() {
           const prompt = [command, ...positional].join(" ");
 
           if (options.dryRun) {
-            const tokens = estimateTokens(prompt);
+            const tokens = estimateTokens(prompt, options.model);
             console.log(`Would send ~${tokens.toLocaleString()} tokens`);
             process.exit(0);
           }
@@ -863,4 +866,18 @@ async function main() {
   }
 }
 
-main();
+const importMetaWithMain = import.meta as ImportMeta & { main?: boolean };
+const isBunMain = importMetaWithMain.main === true;
+const isNodeMain = (() => {
+  const entrypoint = process.argv[1];
+  if (!entrypoint) return false;
+  try {
+    return resolve(entrypoint) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+
+if (isBunMain || isNodeMain) {
+  main();
+}

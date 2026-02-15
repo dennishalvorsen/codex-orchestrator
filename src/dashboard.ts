@@ -32,6 +32,7 @@ function statusColor(status: Job["status"]): string {
     case "running": return green(status.toUpperCase());
     case "completed": return dim(status.toUpperCase());
     case "failed": return red(status.toUpperCase());
+    case "cancelled": return red(status.toUpperCase());
     case "pending": return yellow(status.toUpperCase());
   }
 }
@@ -140,7 +141,8 @@ export function runDashboard(intervalMs: number = 2000): void {
       running: 0,
       pending: 1,
       failed: 2,
-      completed: 3,
+      cancelled: 3,
+      completed: 4,
     };
     jobs.sort((a, b) => {
       const rankDiff = statusRank[a.status] - statusRank[b.status];

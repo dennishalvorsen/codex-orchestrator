@@ -23,6 +23,10 @@ export const config = {
 
   // tmux session prefix
   tmuxPrefix: "codex-agent",
+
+  // Polling settings for tmux pane readiness checks
+  tmuxPollIntervalMs: 100,
+  tmuxPollTimeoutMs: 10000,
 };
 
 export type ReasoningEffort = typeof config.reasoningEfforts[number];

@@ -3,6 +3,7 @@
 import { glob } from "glob";
 import { readFileSync, statSync } from "fs";
 import { resolve, relative } from "path";
+import { encodingForModel, getEncoding, type Tiktoken } from "js-tiktoken";
 
 export interface FileContent {
   path: string;
@@ -10,6 +11,8 @@ export interface FileContent {
   size: number;
   modifiedAt: string;
 }
+
+const encoderCache = new Map<string, Tiktoken>();
 
 export async function loadFiles(
   patterns: string[],
@@ -19,44 +22,44 @@ export async function loadFiles(
   const files: FileContent[] = [];
   const seen = new Set<string>();
 
-  for (const pattern of patterns) {
-    // Handle negation patterns
-    if (pattern.startsWith("!")) {
-      const negPattern = pattern.slice(1);
-      const matches = await glob(negPattern, { cwd: baseDir, absolute: true });
-      for (const match of matches) {
-        seen.delete(match);
-      }
-      continue;
-    }
+  const includes = patterns.filter((pattern) => !pattern.startsWith("!"));
+  const excludes = patterns
+    .filter((pattern) => pattern.startsWith("!"))
+    .map((pattern) => pattern.slice(1));
 
-    const matches = await glob(pattern, { cwd: baseDir, absolute: true });
+  if (includes.length === 0) return files;
 
-    for (const match of matches) {
-      if (seen.has(match)) continue;
+  const matches = await glob(includes, {
+    cwd: baseDir,
+    absolute: true,
+    nodir: true,
+    ignore: excludes,
+  });
 
-      try {
-        const stat = statSync(match);
-        if (!stat.isFile()) continue;
+  for (const match of matches) {
+    if (seen.has(match)) continue;
 
-        // Skip binary files and very large files
-        if (stat.size > 500000) continue; // 500KB limit
+    try {
+      const stat = statSync(match);
+      if (!stat.isFile()) continue;
 
-        const content = readFileSync(match, "utf-8");
+      // Skip binary files and very large files
+      if (stat.size > 500000) continue; // 500KB limit
 
-        // Skip binary content
-        if (content.includes("\0")) continue;
+      const content = readFileSync(match, "utf-8");
 
-        seen.add(match);
-        files.push({
-          path: relative(baseDir, match),
-          content,
-          size: stat.size,
-          modifiedAt: stat.mtime.toISOString(),
-        });
-      } catch {
-        // Skip files we can't read
-      }
+      // Skip binary content
+      if (content.includes("\0")) continue;
+
+      seen.add(match);
+      files.push({
+        path: relative(baseDir, match),
+        content,
+        size: stat.size,
+        modifiedAt: stat.mtime.toISOString(),
+      });
+    } catch {
+      // Skip files we can't read
     }
   }
 
@@ -75,18 +78,24 @@ export async function loadFiles(
   return files;
 }
 
-/**
- * Estimate token count using a more accurate heuristic.
- * Accounts for whitespace density and code patterns.
- */
-export function estimateTokens(text: string): number {
-  // Count words (roughly 1 token each)
-  const words = text.split(/\s+/).filter(Boolean).length;
-  // Count punctuation/symbols (often separate tokens)
-  const symbols = (text.match(/[{}()\[\];:.,<>!=+\-*/&|^~?@#$%]/g) || []).length;
-  // Estimate: words + symbols, with a floor of length/4
-  const estimate = words + Math.floor(symbols * 0.5);
-  return Math.max(estimate, Math.ceil(text.length / 4));
+export function estimateTokens(
+  text: string,
+  model: string = "gpt-5.3-codex"
+): number {
+  try {
+    let enc = encoderCache.get(model);
+    if (!enc) {
+      try {
+        enc = encodingForModel(model as any);
+      } catch {
+        enc = getEncoding("o200k_base");
+      }
+      encoderCache.set(model, enc);
+    }
+    return enc.encode(text).length;
+  } catch {
+    return Math.ceil(text.length / 3.8);
+  }
 }
 
 /**

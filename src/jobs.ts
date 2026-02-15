@@ -1,8 +1,8 @@
 // Job management for async codex agent execution with tmux
 
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, unlinkSync, statSync } from "fs";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, unlinkSync, statSync, renameSync } from "fs";
 import { join } from "path";
-import { config, ReasoningEffort, SandboxMode } from "./config.ts";
+import { config, ReasoningEffort, SandboxMode } from "./config.js";
 import { randomBytes } from "crypto";
 import { extractSessionId, findSessionFile, parseSessionFile, detectIssues, type ParsedSessionData } from "./session-parser.ts";
 import {
@@ -19,9 +19,15 @@ import {
 import { logJobSpawn, logJobComplete } from "./agent-log.ts";
 import { checkOverlaps, addClaim, removeClaims, type Claim } from "./claims.ts";
 
+const JOB_ID_RE = /^[a-f0-9]{8}$/i;
+
+export function assertValidJobId(jobId: string): void {
+  if (!JOB_ID_RE.test(jobId)) throw new Error('Invalid job ID: ' + jobId);
+}
+
 export interface Job {
   id: string;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
   prompt: string;
   model: string;
   reasoningEffort: ReasoningEffort;
@@ -37,20 +43,23 @@ export interface Job {
 }
 
 function ensureJobsDir(): void {
-  mkdirSync(config.jobsDir, { recursive: true });
+  mkdirSync(config.jobsDir, { recursive: true, mode: 0o700 });
 }
 
-function generateJobId(): string {
+export function generateJobId(): string {
   return randomBytes(4).toString("hex");
 }
 
 function getJobPath(jobId: string): string {
+  assertValidJobId(jobId);
   return join(config.jobsDir, `${jobId}.json`);
 }
 
 export function saveJob(job: Job): void {
   ensureJobsDir();
-  writeFileSync(getJobPath(job.id), JSON.stringify(job, null, 2));
+  const tmpPath = getJobPath(job.id) + "." + process.pid + ".tmp";
+  writeFileSync(tmpPath, JSON.stringify(job, null, 2), { mode: 0o600 });
+  renameSync(tmpPath, getJobPath(job.id));
 }
 
 export function loadJob(jobId: string): Job | null {
@@ -216,12 +225,10 @@ export function deleteJob(jobId: string): boolean {
   try { removeClaims(jobId); } catch { /* non-critical */ }
 
   try {
-    unlinkSync(getJobPath(jobId));
-    // Clean up prompt file if exists
-    try {
-      unlinkSync(join(config.jobsDir, `${jobId}.prompt`));
-    } catch {
-      // Prompt file may not exist
+    for (const ext of [".json", ".prompt", ".log"]) {
+      try {
+        unlinkSync(join(config.jobsDir, jobId + ext));
+      } catch {}
     }
     return true;
   } catch {
@@ -309,8 +316,8 @@ export function killJob(jobId: string): boolean {
     killSession(job.tmuxSession);
   }
 
-  job.status = "failed";
-  job.error = "Killed by user";
+  job.status = "cancelled";
+  job.error = "Cancelled by user";
   job.completedAt = new Date().toISOString();
   saveJob(job);
   return true;
@@ -380,7 +387,10 @@ export function cleanupOldJobs(maxAgeDays: number = 7): number {
 
   for (const job of jobs) {
     const jobTime = new Date(job.completedAt || job.createdAt).getTime();
-    if (jobTime < cutoff && (job.status === "completed" || job.status === "failed")) {
+    if (
+      jobTime < cutoff &&
+      (job.status === "completed" || job.status === "failed" || job.status === "cancelled")
+    ) {
       if (deleteJob(job.id)) cleaned++;
     }
   }
